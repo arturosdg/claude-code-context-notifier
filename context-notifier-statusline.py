@@ -18,7 +18,9 @@ from typing import Optional
 STATE_DIR = Path.home() / ".claude" / "state"
 STATE_PATH = STATE_DIR / "context-notifier.json"
 LOG_PATH = STATE_DIR / "context-notifier.log"
-THRESHOLDS = {33, 50}
+
+# Sorted tuple — no need to call sorted() on every run
+THRESHOLDS = (33, 50)
 RESET_THRESHOLD = 25
 DEFAULT_TITLE = "Claude Code context"
 
@@ -109,8 +111,7 @@ def build_session_label(payload: dict) -> str:
     return project_name
 
 
-def build_notification_message(payload: dict, used_percentage: int, threshold: int) -> str:
-    del threshold
+def build_notification_message(payload: dict, used_percentage: int) -> str:
     rate_limits = payload.get("rate_limits") or {}
     five_hour = (rate_limits.get("five_hour") or {}).get("used_percentage")
     quota_text = "cuota n/d"
@@ -136,6 +137,7 @@ def main() -> int:
         print("")
         return 0
 
+    # --- Load state and session ---
     state = load_state()
     sessions = state.setdefault("sessions", {})
     session = sessions.get(session_id)
@@ -150,37 +152,37 @@ def main() -> int:
     }
     last_percentage = normalize_percentage(session.get("last_percentage"))
 
+    # --- Check thresholds ---
     if used_percentage < RESET_THRESHOLD:
         notified.clear()
 
-    # On first run last_percentage is None — treat as 0 so thresholds already
-    # crossed at session start are still notified.
+    # Treat None last_percentage as 0 so thresholds already crossed at session
+    # start are notified on the first run.
     effective_last = last_percentage if last_percentage is not None else 0
-    for threshold in sorted(THRESHOLDS):
+    for threshold in THRESHOLDS:
         if effective_last < threshold <= used_percentage and threshold not in notified:
             notify(
-                build_notification_message(payload, used_percentage, threshold),
+                build_notification_message(payload, used_percentage),
                 build_notification_title(payload),
             )
             notified.add(threshold)
 
+    # --- Persist only if something changed ---
+    new_notified = sorted(notified)
+    if used_percentage == last_percentage and new_notified == session.get("notified_thresholds", []):
+        print("")
+        return 0
+
     session.update({
         "last_percentage": used_percentage,
         "model_id": (payload.get("model") or {}).get("id"),
-        "transcript_path": payload.get("transcript_path"),
         "updated_at": now_iso(),
-        "notified_thresholds": sorted(notified),
+        "notified_thresholds": new_notified,
     })
 
-    # Update current session without clearing others so parallel sessions
-    # (multiple worktrees, Desktop + CLI) don't lose their notified state.
-    # Prune to the 20 most recently updated sessions to bound file size.
     sessions[session_id] = session
     if len(sessions) > 20:
-        sorted_ids = sorted(
-            sessions,
-            key=lambda k: sessions[k].get("updated_at", ""),
-        )
+        sorted_ids = sorted(sessions, key=lambda k: sessions[k].get("updated_at", ""))
         for old_id in sorted_ids[:-20]:
             del sessions[old_id]
     save_state(state)

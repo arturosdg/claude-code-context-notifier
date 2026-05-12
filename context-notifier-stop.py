@@ -28,20 +28,11 @@ from typing import Optional
 STATE_DIR = Path.home() / ".claude" / "state"
 STATE_PATH = STATE_DIR / "context-notifier.json"
 LOG_PATH = STATE_DIR / "context-notifier.log"
-THRESHOLDS = {33, 50}
+
+# Sorted tuple — no need to call sorted() on every run
+THRESHOLDS = (33, 50)
 RESET_THRESHOLD = 25
 DEFAULT_TITLE = "Claude Code context"
-
-# Context window size in tokens per model family.
-# All current Claude models share 200k; extend if needed.
-MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-opus-4": 200_000,
-    "claude-sonnet-4": 200_000,
-    "claude-haiku-4": 200_000,
-    "claude-opus-3-5": 200_000,
-    "claude-sonnet-3-5": 200_000,
-    "claude-haiku-3-5": 200_000,
-}
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 
@@ -98,47 +89,55 @@ def save_state(state: dict) -> None:
         log_error(f"failed to save state: {exc}")
 
 
-def get_context_window(model_id: str) -> int:
-    if not model_id:
-        return DEFAULT_CONTEXT_WINDOW
-    for prefix, size in MODEL_CONTEXT_WINDOWS.items():
-        if model_id.startswith(prefix):
-            return size
-    return DEFAULT_CONTEXT_WINDOW
+def _iter_lines_reversed(path: Path, chunk_size: int = 8192):
+    """Yield lines from a file in reverse order without loading it all into memory."""
+    with path.open("rb") as f:
+        f.seek(0, 2)
+        remaining = f.tell()
+        buf = b""
+        while remaining > 0:
+            read_size = min(chunk_size, remaining)
+            remaining -= read_size
+            f.seek(remaining)
+            buf = f.read(read_size) + buf
+            lines = buf.split(b"\n")
+            buf = lines[0]  # may be a partial line — carry it over
+            for line in reversed(lines[1:]):
+                yield line.decode("utf-8", errors="replace")
+        if buf:
+            yield buf.decode("utf-8", errors="replace")
 
 
 def read_transcript(transcript_path: str) -> tuple[Optional[int], Optional[str]]:
-    """Parse transcript and return (total_tokens_used, model_id) from the last assistant turn."""
+    """Return (total_tokens, model_id) from the last assistant turn in the transcript.
+
+    Reads the file backwards so it stops after the first (last) matching entry,
+    avoiding loading the entire transcript into memory.
+    """
     try:
         p = Path(transcript_path)
         if not p.exists():
             return None, None
 
-        last_usage = None
-        last_model = None
-
-        for line in p.read_text(encoding="utf-8").splitlines():
+        for line in _iter_lines_reversed(p):
             if not line.strip():
                 continue
             try:
                 d = json.loads(line)
                 msg = d.get("message", {})
                 if msg.get("role") == "assistant" and "usage" in msg:
-                    last_usage = msg["usage"]
-                    last_model = msg.get("model")
+                    usage = msg["usage"]
+                    total = (
+                        usage.get("input_tokens", 0)
+                        + usage.get("cache_creation_input_tokens", 0)
+                        + usage.get("cache_read_input_tokens", 0)
+                        + usage.get("output_tokens", 0)
+                    )
+                    return total, msg.get("model")
             except (json.JSONDecodeError, AttributeError):
                 continue
 
-        if last_usage is None:
-            return None, last_model
-
-        total = (
-            last_usage.get("input_tokens", 0)
-            + last_usage.get("cache_creation_input_tokens", 0)
-            + last_usage.get("cache_read_input_tokens", 0)
-            + last_usage.get("output_tokens", 0)
-        )
-        return total, last_model
+        return None, None
 
     except OSError as exc:
         log_error(f"transcript read failed: {exc}")
@@ -167,18 +166,9 @@ def notify(message: str, title: str) -> None:
         log_error(f"osascript failed: {exc}")
 
 
-def build_session_label(payload: dict) -> str:
-    # Stop hook provides cwd but not workspace; derive project name from cwd
+def build_notification_title(payload: dict) -> str:
     cwd = payload.get("cwd") or ""
     return Path(cwd).name if cwd else DEFAULT_TITLE
-
-
-def build_notification_message(used_percentage: int) -> str:
-    return f"Contexto {used_percentage}%"
-
-
-def build_notification_title(payload: dict) -> str:
-    return build_session_label(payload) or DEFAULT_TITLE
 
 
 def main() -> int:
@@ -189,15 +179,7 @@ def main() -> int:
     if not session_id or not transcript_path:
         return 0
 
-    total_tokens, model_id = read_transcript(transcript_path)
-    if total_tokens is None:
-        return 0
-
-    context_window = get_context_window(model_id or "")
-    used_percentage = normalize_percentage((total_tokens / context_window) * 100)
-    if used_percentage is None:
-        return 0
-
+    # --- Load state and session ---
     state = load_state()
     sessions = state.setdefault("sessions", {})
     session = sessions.get(session_id)
@@ -212,39 +194,54 @@ def main() -> int:
     }
     last_percentage = normalize_percentage(session.get("last_percentage"))
 
+    # --- Early exit: nothing can fire, skip transcript read entirely ---
+    # All thresholds already notified and context hasn't reset below RESET_THRESHOLD.
+    if (
+        last_percentage is not None
+        and last_percentage >= RESET_THRESHOLD
+        and all(t in notified for t in THRESHOLDS)
+    ):
+        return 0
+
+    # --- Read transcript (backwards — stops at first match) ---
+    total_tokens, model_id = read_transcript(transcript_path)
+    if total_tokens is None:
+        return 0
+
+    used_percentage = normalize_percentage((total_tokens / DEFAULT_CONTEXT_WINDOW) * 100)
+    if used_percentage is None:
+        return 0
+
+    # --- Check thresholds ---
     if used_percentage < RESET_THRESHOLD:
         notified.clear()
 
-    # On first run last_percentage is None — treat as 0 so thresholds already
-    # crossed at session start are still notified.
+    # Treat None last_percentage as 0 so thresholds already crossed at session
+    # start are notified on the first run.
     effective_last = last_percentage if last_percentage is not None else 0
-    for threshold in sorted(THRESHOLDS):
+    for threshold in THRESHOLDS:
         if effective_last < threshold <= used_percentage and threshold not in notified:
             notify(
-                build_notification_message(used_percentage),
+                f"Contexto {used_percentage}%",
                 build_notification_title(payload),
             )
             notified.add(threshold)
 
+    # --- Persist only if something changed ---
+    new_notified = sorted(notified)
+    if used_percentage == last_percentage and new_notified == session.get("notified_thresholds", []):
+        return 0
+
     session.update({
         "last_percentage": used_percentage,
         "model_id": model_id,
-        "total_tokens": total_tokens,
-        "context_window": context_window,
-        "transcript_path": transcript_path,
         "updated_at": now_iso(),
-        "notified_thresholds": sorted(notified),
+        "notified_thresholds": new_notified,
     })
 
-    # Update current session without clearing others so parallel sessions
-    # (multiple worktrees, Desktop + CLI) don't lose their notified state.
-    # Prune to the 20 most recently updated sessions to bound file size.
     sessions[session_id] = session
     if len(sessions) > 20:
-        sorted_ids = sorted(
-            sessions,
-            key=lambda k: sessions[k].get("updated_at", ""),
-        )
+        sorted_ids = sorted(sessions, key=lambda k: sessions[k].get("updated_at", ""))
         for old_id in sorted_ids[:-20]:
             del sessions[old_id]
     save_state(state)
