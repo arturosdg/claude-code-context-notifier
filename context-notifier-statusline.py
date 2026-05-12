@@ -104,7 +104,7 @@ def build_session_label(payload: dict) -> str:
     workspace = payload.get("workspace") or {}
     worktree = payload.get("worktree") or {}
     project_dir = workspace.get("project_dir")
-    project_name = Path(project_dir).name if project_dir else "proyecto"
+    project_name = Path(project_dir).name if project_dir else "project"
     worktree_name = worktree.get("name")
     if worktree_name:
         return f"{project_name} | {worktree_name}"
@@ -114,13 +114,13 @@ def build_session_label(payload: dict) -> str:
 def build_notification_message(payload: dict, used_percentage: int) -> str:
     rate_limits = payload.get("rate_limits") or {}
     five_hour = (rate_limits.get("five_hour") or {}).get("used_percentage")
-    quota_text = "cuota n/d"
+    quota_text = "5h quota n/a"
     if five_hour is not None:
         try:
-            quota_text = f"cuota 5h {float(five_hour):.1f}%"
+            quota_text = f"5h quota {float(five_hour):.1f}%"
         except (TypeError, ValueError):
-            quota_text = "cuota n/d"
-    return f"Contexto {used_percentage}% | {quota_text}"
+            quota_text = "5h quota n/a"
+    return f"Context {used_percentage}% | {quota_text}"
 
 
 def build_notification_title(payload: dict) -> str:

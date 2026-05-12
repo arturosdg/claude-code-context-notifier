@@ -222,7 +222,7 @@ def main() -> int:
     for threshold in THRESHOLDS:
         if effective_last < threshold <= used_percentage and threshold not in notified:
             notify(
-                f"Contexto {used_percentage}%",
+                f"Context {used_percentage}%",
                 build_notification_title(payload),
             )
             notified.add(threshold)

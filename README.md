@@ -8,7 +8,7 @@ This hook sends a native macOS notification when your session crosses context us
 
 ```text
 Title: mo-library-desktop-ui
-Body:  Contexto 51%
+Body:  Context 51%
 ```
 
 Thresholds: **33%** and **50%**.
@@ -94,7 +94,7 @@ The `Stop` hook fires after every Claude turn. Its payload includes `transcript_
 The `statusLine` fires continuously in the CLI terminal. Its payload includes `context_window.used_percentage` directly — no transcript parsing needed. The notification body also includes 5-hour quota usage when available:
 
 ```text
-Contexto 51% | cuota 5h 23.5%
+Context 51% | 5h quota 23.5%
 ```
 
 ---
