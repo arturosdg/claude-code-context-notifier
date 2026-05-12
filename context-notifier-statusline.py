@@ -153,14 +153,16 @@ def main() -> int:
     if used_percentage < RESET_THRESHOLD:
         notified.clear()
 
-    if last_percentage is not None:
-        for threshold in sorted(THRESHOLDS):
-            if last_percentage < threshold <= used_percentage and threshold not in notified:
-                notify(
-                    build_notification_message(payload, used_percentage, threshold),
-                    build_notification_title(payload),
-                )
-                notified.add(threshold)
+    # On first run last_percentage is None — treat as 0 so thresholds already
+    # crossed at session start are still notified.
+    effective_last = last_percentage if last_percentage is not None else 0
+    for threshold in sorted(THRESHOLDS):
+        if effective_last < threshold <= used_percentage and threshold not in notified:
+            notify(
+                build_notification_message(payload, used_percentage, threshold),
+                build_notification_title(payload),
+            )
+            notified.add(threshold)
 
     session.update({
         "last_percentage": used_percentage,
