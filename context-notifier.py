@@ -186,8 +186,17 @@ def main() -> int:
         }
     )
 
-    sessions.clear()
+    # Update current session without clearing others so parallel sessions
+    # (multiple worktrees, Desktop + CLI) don't lose their notified state.
+    # Prune to the 20 most recently updated sessions to bound file size.
     sessions[session_id] = session
+    if len(sessions) > 20:
+        sorted_ids = sorted(
+            sessions,
+            key=lambda k: sessions[k].get("updated_at", ""),
+        )
+        for old_id in sorted_ids[:-20]:
+            del sessions[old_id]
     save_state(state)
 
     print("")
