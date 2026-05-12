@@ -1,36 +1,36 @@
 # Claude Code Context Notifier
 
-macOS notifier for Claude Code that sends a native system notification when a session crosses context usage thresholds:
+## Why this exists
 
-- `33%` context used
-- `50%` context used
+Claude Code has a finite context window. When it fills up, Claude starts forgetting earlier parts of the conversation — tool outputs, decisions, code it already wrote. This happens silently, without any warning, and it's easy to miss while you're focused on a task.
 
-The notification title is derived from the current project and worktree (CLI) or working directory (Desktop):
+This hook sends a native macOS notification when your session crosses context usage thresholds, so you can decide to `/clear`, start a new session, or wrap up before things degrade.
 
 ```text
 Title: mo-library-desktop-ui
 Body:  Contexto 51%
 ```
 
+Thresholds: **33%** and **50%**.
+
 ---
 
 ## Two scripts, two hooks
 
-There are two variants depending on how you run Claude Code:
+Claude Code exposes different hooks depending on where it runs. There are two variants:
 
 | Script | Hook | Where it works | Context source |
 |---|---|---|---|
 | `context-notifier-statusline.py` | `statusLine` | CLI only | `context_window.used_percentage` from payload |
 | `context-notifier-stop.py` | `Stop` | CLI + Desktop app | Token counts parsed from session transcript |
 
-> **Note:** `statusLine` is a CLI-only feature — it is never invoked by Claude Desktop app.  
-> The `Stop` hook fires at the end of every turn in both environments, but its payload does not include context window data, so the Stop variant derives the percentage by reading `input + cache + output` tokens from the `.jsonl` transcript.
+> **Why two?** The `statusLine` hook is a CLI-only feature — it fires continuously in the terminal and receives context window data directly in its payload. Claude Desktop app never invokes it.
+>
+> The `Stop` hook fires at the end of every turn in both environments, but its payload does not include context window data. The Stop variant works around this by reading `input + cache + output` token counts from the `.jsonl` session transcript and dividing by the model's context window size (200k for all current Claude models).
 
 ---
 
 ## Install
-
-Copy the script you want to use:
 
 ```bash
 mkdir -p ~/.claude/hooks
@@ -78,28 +78,24 @@ Add to `~/.claude/settings.json`:
 
 ## How each variant works
 
+### Stop variant
+
+The `Stop` hook fires after every Claude turn. Its payload includes `transcript_path` but no context window data. The script:
+
+1. Loads per-session state — if all thresholds are already notified and context hasn't reset, exits immediately without touching the transcript
+2. Reads the `.jsonl` transcript **backwards** in 8KB chunks, stopping at the first (last) assistant message
+3. Sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`
+4. Divides by 200,000 to get the usage percentage
+5. Fires a notification if any threshold is newly crossed
+6. Skips writing state to disk if nothing changed
+
 ### statusLine variant
 
-Claude Code CLI passes a JSON payload on stdin with:
-
-- `context_window.used_percentage` — direct percentage, no calculation needed
-- `workspace.project_dir`, `worktree.name`
-- `rate_limits.five_hour.used_percentage`
-
-The notification body includes the 5-hour quota usage when available:
+The `statusLine` fires continuously in the CLI terminal. Its payload includes `context_window.used_percentage` directly — no transcript parsing needed. The notification body also includes 5-hour quota usage when available:
 
 ```text
 Contexto 51% | cuota 5h 23.5%
 ```
-
-### Stop variant
-
-The `Stop` hook payload includes `transcript_path` but no context window data. The script:
-
-1. Reads the `.jsonl` transcript
-2. Finds the last assistant message's `usage` field
-3. Sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`
-4. Divides by the model's context window size (200k for all current Claude models)
 
 ---
 
@@ -107,13 +103,16 @@ The `Stop` hook payload includes `transcript_path` but no context window data. T
 
 Both scripts store per-session state in `~/.claude/state/context-notifier.json`:
 
-- Notifications fire only when a threshold is crossed (not repeatedly)
-- Thresholds reset when context drops below `25%`
+- Each session (worktree, Desktop window, CLI tab) tracks its thresholds independently
+- Notifications fire only when a threshold is **crossed**, not on every turn
+- Thresholds reset when context drops below `25%` (e.g. after `/clear`)
+- Up to 20 sessions are kept; older ones are pruned automatically
+- Errors are logged to `~/.claude/state/context-notifier.log`
 
 ---
 
 ## Notes
 
-- Designed for macOS — uses `osascript` for system notifications.
-- Errors are logged to `~/.claude/state/context-notifier.log`.
-- Avoid project-specific hardcoded paths so the script works across machines.
+- macOS only — uses `osascript` for system notifications.
+- No external dependencies beyond Python 3 (included with macOS).
+- Works across machines — no hardcoded paths.
