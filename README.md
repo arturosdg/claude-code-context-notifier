@@ -1,56 +1,48 @@
 # Claude Code Context Notifier
 
-Small macOS notifier for Claude Code that uses the `Stop` hook to monitor context usage.
-
-It sends a native system notification when a session crosses:
+macOS notifier for Claude Code that sends a native system notification when a session crosses context usage thresholds:
 
 - `33%` context used
 - `50%` context used
 
-The notification title is derived from the current project and worktree:
-
-- `project-name | worktree-name`
-
-The notification body shows:
-
-- current context usage
-- current 5-hour Claude quota usage when available
-
-Example:
+The notification title is derived from the current project and worktree (CLI) or working directory (Desktop):
 
 ```text
-Title: mo-library-desktop-ui | nostalgic-satoshi
-Body:  Contexto 51% | cuota 5h 23.5%
+Title: mo-library-desktop-ui
+Body:  Contexto 51%
 ```
 
-## How It Works
+---
 
-The `Stop` hook fires at the end of every Claude turn. Claude Code passes a JSON payload on stdin that includes:
+## Two scripts, two hooks
 
-- `context_window.used_percentage`
-- `session_id`
-- `workspace.project_dir`
-- `worktree.name`
-- `rate_limits.five_hour.used_percentage`
+There are two variants depending on how you run Claude Code:
 
-This script:
+| Script | Hook | Where it works | Context source |
+|---|---|---|---|
+| `context-notifier-statusline.py` | `statusLine` | CLI only | `context_window.used_percentage` from payload |
+| `context-notifier-stop.py` | `Stop` | CLI + Desktop app | Token counts parsed from session transcript |
 
-1. reads the JSON payload from stdin
-2. stores per-session state in `~/.claude/state/context-notifier.json`
-3. triggers `osascript` notifications only when thresholds are crossed
-4. rearms after context drops below `25%`
+> **Note:** `statusLine` is a CLI-only feature — it is never invoked by Claude Desktop app.  
+> The `Stop` hook fires at the end of every turn in both environments, but its payload does not include context window data, so the Stop variant derives the percentage by reading `input + cache + output` tokens from the `.jsonl` transcript.
+
+---
 
 ## Install
 
-Copy the script somewhere stable, for example:
+Copy the script you want to use:
 
 ```bash
 mkdir -p ~/.claude/hooks
-cp context-notifier.py ~/.claude/hooks/context-notifier.py
+cp context-notifier-stop.py ~/.claude/hooks/context-notifier.py     # Desktop + CLI
+# or
+cp context-notifier-statusline.py ~/.claude/hooks/context-notifier.py  # CLI only
 chmod +x ~/.claude/hooks/context-notifier.py
 ```
 
-Then add this to `~/.claude/settings.json`:
+### Option A — Stop hook (Desktop app + CLI)
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -69,8 +61,59 @@ Then add this to `~/.claude/settings.json`:
 }
 ```
 
+### Option B — statusLine hook (CLI only)
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/hooks/context-notifier.py"
+  }
+}
+```
+
+---
+
+## How each variant works
+
+### statusLine variant
+
+Claude Code CLI passes a JSON payload on stdin with:
+
+- `context_window.used_percentage` — direct percentage, no calculation needed
+- `workspace.project_dir`, `worktree.name`
+- `rate_limits.five_hour.used_percentage`
+
+The notification body includes the 5-hour quota usage when available:
+
+```text
+Contexto 51% | cuota 5h 23.5%
+```
+
+### Stop variant
+
+The `Stop` hook payload includes `transcript_path` but no context window data. The script:
+
+1. Reads the `.jsonl` transcript
+2. Finds the last assistant message's `usage` field
+3. Sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`
+4. Divides by the model's context window size (200k for all current Claude models)
+
+---
+
+## State
+
+Both scripts store per-session state in `~/.claude/state/context-notifier.json`:
+
+- Notifications fire only when a threshold is crossed (not repeatedly)
+- Thresholds reset when context drops below `25%`
+
+---
+
 ## Notes
 
-- Designed for macOS because it uses `osascript`.
-- Works with both the Claude Code CLI and Claude Desktop app.
-- Intentionally keeps notifications short and avoids project-specific hardcoded paths.
+- Designed for macOS — uses `osascript` for system notifications.
+- Errors are logged to `~/.claude/state/context-notifier.log`.
+- Avoid project-specific hardcoded paths so the script works across machines.
