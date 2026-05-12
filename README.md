@@ -1,6 +1,6 @@
 # Claude Code Context Notifier
 
-Small macOS notifier for Claude Code that uses `statusLine` input as a sensor for context usage.
+Small macOS notifier for Claude Code that uses the `Stop` hook to monitor context usage.
 
 It sends a native system notification when a session crosses:
 
@@ -25,9 +25,10 @@ Body:  Contexto 51% | cuota 5h 23.5%
 
 ## How It Works
 
-Claude Code `statusLine` scripts receive structured JSON on stdin, including:
+The `Stop` hook fires at the end of every Claude turn. Claude Code passes a JSON payload on stdin that includes:
 
 - `context_window.used_percentage`
+- `session_id`
 - `workspace.project_dir`
 - `worktree.name`
 - `rate_limits.five_hour.used_percentage`
@@ -53,9 +54,17 @@ Then add this to `~/.claude/settings.json`:
 
 ```json
 {
-  "statusLine": {
-    "type": "command",
-    "command": "python3 ~/.claude/hooks/context-notifier.py"
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/context-notifier.py"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -63,5 +72,5 @@ Then add this to `~/.claude/settings.json`:
 ## Notes
 
 - Designed for macOS because it uses `osascript`.
-- It does not require Claude Code hooks.
-- It intentionally keeps notifications short and avoids project-specific hardcoded paths.
+- Works with both the Claude Code CLI and Claude Desktop app.
+- Intentionally keeps notifications short and avoids project-specific hardcoded paths.
